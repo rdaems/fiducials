@@ -53,11 +53,20 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/aruco.hpp>
 
+#include <aruco_detect/shared_queue.h>
+
 #include <list>
 #include <string>
 
 using namespace std;
 using namespace cv;
+
+struct DetectedMarkers {
+    std_msgs::Header header;
+    vector <int>  ids;
+    vector <vector <Point2f> > corners;
+    cv_bridge::CvImagePtr cv_ptr;
+};
 
 class FiducialsNode {
   private:
@@ -88,8 +97,16 @@ class FiducialsNode {
     void imageCallback(const sensor_msgs::ImageConstPtr & msg);
     void camInfoCallback(const sensor_msgs::CameraInfo::ConstPtr & msg);
 
+    void processImage(const sensor_msgs::ImageConstPtr &msg);
+    void processDetected(const DetectedMarkers &detected);
+
+    shared_queue<sensor_msgs::ImageConstPtr> input_images;
+    shared_queue<DetectedMarkers> input_detected;
+
   public:
     FiducialsNode(ros::NodeHandle &nh);
+
+    void run();
 };
 
 
@@ -117,41 +134,56 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
     ROS_INFO("Got image");
     frameNum++;
 
-    cv_bridge::CvImagePtr cv_ptr;
+    input_images.push(msg); 
+}
 
-    fiducial_pose::FiducialTransformArray fta;
-    fta.header.stamp = msg->header.stamp;
-    fta.header.frame_id = frameId;
-    fta.image_seq = msg->header.seq;
-
+void FiducialsNode::processImage(const sensor_msgs::ImageConstPtr &msg) {
     try {
-        cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
         
-        vector <int>  ids;
-        vector <vector <Point2f> > corners, rejected;
-        vector <Vec3d>  rvecs, tvecs;
+        DetectedMarkers detected;
+        detected.header = msg->header;
+        detected.cv_ptr = cv_ptr;
 
-        aruco::detectMarkers(cv_ptr->image, dictionary, corners, ids, detectorParams);
-        ROS_INFO("Detectd %d markers", (int)ids.size());
+        aruco::detectMarkers(cv_ptr->image, dictionary, detected.corners, detected.ids, detectorParams);
+        ROS_INFO("Detectd %d markers", (int)detected.ids.size());
  
-        for (int i=0; i<ids.size(); i++) {
+        for (int i=0; i<detected.ids.size(); i++) {
             fiducial_pose::Fiducial fid;
             fid.header.stamp = msg->header.stamp;
             fid.header.frame_id =frameId;
             fid.image_seq = msg->header.seq;
-            fid.fiducial_id = ids[i];
+            fid.fiducial_id = detected.ids[i];
             
-            fid.x0 = corners[i][0].x;
-            fid.y0 = corners[i][0].y;
-            fid.x1 = corners[i][1].x;
-            fid.y1 = corners[i][1].y;
-            fid.x2 = corners[i][2].x;
-            fid.y2 = corners[i][2].y;
-            fid.x3 = corners[i][3].x;
-            fid.y3 = corners[i][3].y;
+            fid.x0 = detected.corners[i][0].x;
+            fid.y0 = detected.corners[i][0].y;
+            fid.x1 = detected.corners[i][1].x;
+            fid.y1 = detected.corners[i][1].y;
+            fid.x2 = detected.corners[i][2].x;
+            fid.y2 = detected.corners[i][2].y;
+            fid.x3 = detected.corners[i][3].x;
+            fid.y3 = detected.corners[i][3].y;
 
             vertices_pub.publish(fid);
         }
+
+        input_detected.push(detected);
+    }
+     catch(cv_bridge::Exception & e) {
+        ROS_ERROR("cv_bridge exception: %s", e.what());
+    }
+     catch(cv::Exception & e) {
+        ROS_ERROR("cv exception: %s", e.what());
+    }
+}
+
+void FiducialsNode::processDetected(const DetectedMarkers &detected) {
+    try {
+        vector <Vec3d>  rvecs, tvecs;
+        fiducial_pose::FiducialTransformArray fta;
+        fta.header.stamp = detected.header.stamp;
+        fta.header.frame_id = frameId;
+        fta.image_seq = detected.header.seq;
 
         if (!haveCamInfo) {
             if (frameNum > 5) {
@@ -160,15 +192,15 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
             return;
         }
 
-        aruco::estimatePoseSingleMarkers(corners, fiducial_len, K, dist, rvecs, tvecs);
-        if(ids.size() > 0) {
-            aruco::drawDetectedMarkers(cv_ptr->image, corners, ids);
+        aruco::estimatePoseSingleMarkers(detected.corners, fiducial_len, K, dist, rvecs, tvecs);
+        if(detected.ids.size() > 0) {
+            aruco::drawDetectedMarkers(detected.cv_ptr->image, detected.corners, detected.ids);
         }
 
-        for (int i=0; i<ids.size(); i++) {
-            aruco::drawAxis(cv_ptr->image, K, dist, rvecs[i], tvecs[i], fiducial_len);
+        for (int i=0; i<detected.ids.size(); i++) {
+            aruco::drawAxis(detected.cv_ptr->image, K, dist, rvecs[i], tvecs[i], fiducial_len);
 
-            ROS_INFO("Detected id %d T %.2f %.2f %.2f R %.2f %.2f %.2f", ids[i],
+            ROS_INFO("Detected id %d T %.2f %.2f %.2f R %.2f %.2f %.2f", detected.ids[i],
                      tvecs[i][0], tvecs[i][1], tvecs[i][2],
                      rvecs[i][0], rvecs[i][1], rvecs[i][2]);
 
@@ -177,7 +209,7 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
             ROS_INFO("angle %f axis %f %f %f", angle, axis[0], axis[1], axis[2]);
 
             fiducial_pose::FiducialTransform ft;
-            ft.fiducial_id = ids[i];
+            ft.fiducial_id = detected.ids[i];
 
             ft.transform.translation.x = tvecs[i][0];
             ft.transform.translation.y = tvecs[i][1];
@@ -195,9 +227,7 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
 
         }
 
-        //cv::imshow("image", cv_ptr->image);
-        ////cv::waitKey(2);
-	image_pub.publish(cv_ptr->toImageMsg());
+        image_pub.publish(detected.cv_ptr->toImageMsg());
 
         pose_pub.publish(fta);
     }
@@ -206,6 +236,13 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
     }
      catch(cv::Exception & e) {
         ROS_ERROR("cv exception: %s", e.what());
+    }
+}
+
+void FiducialsNode::run() {
+    while (ros::ok()) {
+        processImage(input_images.wait_and_front_pop());
+        processDetected(input_detected.wait_and_front_pop());
     }
 }
 
@@ -253,7 +290,10 @@ int main(int argc, char ** argv) {
 
     FiducialsNode node(nh);
 
-    ros::spin();
+    ros::AsyncSpinner spinner(1);
+    spinner.start();
+
+    node.run();
 
     return 0;
 }

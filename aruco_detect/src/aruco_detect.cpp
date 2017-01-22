@@ -243,9 +243,9 @@ void FiducialsNode::processDetected() {
 }
 
 void FiducialsNode::run() {
+    boost::thread thread(&FiducialsNode::processDetected, this);
     while (ros::ok()) {
         processImage(input_images.wait_and_front_pop());
-        boost::thread thread(&FiducialsNode::processDetected, this);
     }
 }
 

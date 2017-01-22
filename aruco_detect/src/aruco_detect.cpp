@@ -97,8 +97,8 @@ class FiducialsNode {
     void imageCallback(const sensor_msgs::ImageConstPtr & msg);
     void camInfoCallback(const sensor_msgs::CameraInfo::ConstPtr & msg);
 
-    void processImage(const sensor_msgs::ImageConstPtr &msg);
-    void processDetected();
+    void detectionThread();
+    void poseEstimationThread();
 
     shared_queue<sensor_msgs::ImageConstPtr> input_images;
     shared_queue<DetectedMarkers> input_detected;
@@ -137,47 +137,50 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
     input_images.push(msg); 
 }
 
-void FiducialsNode::processImage(const sensor_msgs::ImageConstPtr &msg) {
-    try {
-        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-        
-        DetectedMarkers detected;
-        detected.header = msg->header;
-        detected.cv_ptr = cv_ptr;
-
-        aruco::detectMarkers(cv_ptr->image, dictionary, detected.corners, detected.ids, detectorParams);
-        ROS_INFO("Detectd %d markers", (int)detected.ids.size());
- 
-        for (int i=0; i<detected.ids.size(); i++) {
-            fiducial_pose::Fiducial fid;
-            fid.header.stamp = msg->header.stamp;
-            fid.header.frame_id =frameId;
-            fid.image_seq = msg->header.seq;
-            fid.fiducial_id = detected.ids[i];
+void FiducialsNode::detectionThread() {
+    while (ros::ok()) {
+        sensor_msgs::ImageConstPtr msg = input_images.wait_and_front_pop();
+        try {
+            cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
             
-            fid.x0 = detected.corners[i][0].x;
-            fid.y0 = detected.corners[i][0].y;
-            fid.x1 = detected.corners[i][1].x;
-            fid.y1 = detected.corners[i][1].y;
-            fid.x2 = detected.corners[i][2].x;
-            fid.y2 = detected.corners[i][2].y;
-            fid.x3 = detected.corners[i][3].x;
-            fid.y3 = detected.corners[i][3].y;
+            DetectedMarkers detected;
+            detected.header = msg->header;
+            detected.cv_ptr = cv_ptr;
 
-            vertices_pub.publish(fid);
+            aruco::detectMarkers(cv_ptr->image, dictionary, detected.corners, detected.ids, detectorParams);
+            ROS_INFO("Detectd %d markers", (int)detected.ids.size());
+     
+            for (int i=0; i<detected.ids.size(); i++) {
+                fiducial_pose::Fiducial fid;
+                fid.header.stamp = msg->header.stamp;
+                fid.header.frame_id =frameId;
+                fid.image_seq = msg->header.seq;
+                fid.fiducial_id = detected.ids[i];
+                
+                fid.x0 = detected.corners[i][0].x;
+                fid.y0 = detected.corners[i][0].y;
+                fid.x1 = detected.corners[i][1].x;
+                fid.y1 = detected.corners[i][1].y;
+                fid.x2 = detected.corners[i][2].x;
+                fid.y2 = detected.corners[i][2].y;
+                fid.x3 = detected.corners[i][3].x;
+                fid.y3 = detected.corners[i][3].y;
+
+                vertices_pub.publish(fid);
+            }
+
+            input_detected.push(detected);
         }
-
-        input_detected.push(detected);
-    }
-     catch(cv_bridge::Exception & e) {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-    }
-     catch(cv::Exception & e) {
-        ROS_ERROR("cv exception: %s", e.what());
+         catch(cv_bridge::Exception & e) {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+         catch(cv::Exception & e) {
+            ROS_ERROR("cv exception: %s", e.what());
+        }
     }
 }
 
-void FiducialsNode::processDetected() {
+void FiducialsNode::poseEstimationThread() {
     while (ros::ok()) {
         DetectedMarkers detected = input_detected.wait_and_front_pop();
         try {
@@ -243,10 +246,8 @@ void FiducialsNode::processDetected() {
 }
 
 void FiducialsNode::run() {
-    boost::thread thread(&FiducialsNode::processDetected, this);
-    while (ros::ok()) {
-        processImage(input_images.wait_and_front_pop());
-    }
+    boost::thread thread(&FiducialsNode::poseEstimationThread, this);
+    detectionThread();
 }
 
 FiducialsNode::FiducialsNode(ros::NodeHandle & nh) : it(nh)

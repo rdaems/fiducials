@@ -190,11 +190,17 @@ void FiducialsNode::poseEstimationThread() {
             fta.header.frame_id = frameId;
             fta.image_seq = detected.header.seq;
 
+            if(detected.ids.size() > 0) {
+                image_pub.publish(detected.cv_ptr->toImageMsg());
+                pose_pub.publish(fta);
+                continue;
+            }
+
             if (!haveCamInfo) {
                 if (frameNum > 5) {
                     ROS_ERROR("No camera intrinsics");
                 }
-                return;
+                break;
             }   
 
             aruco::estimatePoseSingleMarkers(detected.corners, fiducial_len, K, dist, rvecs, tvecs);

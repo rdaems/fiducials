@@ -98,7 +98,7 @@ class FiducialsNode {
     void camInfoCallback(const sensor_msgs::CameraInfo::ConstPtr & msg);
 
     void processImage(const sensor_msgs::ImageConstPtr &msg);
-    void processDetected(const DetectedMarkers &detected);
+    void processDetected();
 
     shared_queue<sensor_msgs::ImageConstPtr> input_images;
     shared_queue<DetectedMarkers> input_detected;
@@ -177,72 +177,75 @@ void FiducialsNode::processImage(const sensor_msgs::ImageConstPtr &msg) {
     }
 }
 
-void FiducialsNode::processDetected(const DetectedMarkers &detected) {
-    try {
-        vector <Vec3d>  rvecs, tvecs;
-        fiducial_pose::FiducialTransformArray fta;
-        fta.header.stamp = detected.header.stamp;
-        fta.header.frame_id = frameId;
-        fta.image_seq = detected.header.seq;
+void FiducialsNode::processDetected() {
+    while (ros::ok()) {
+        DetectedMarkers detected = input_detected.wait_and_front_pop();
+        try {
+            vector <Vec3d>  rvecs, tvecs;
+            fiducial_pose::FiducialTransformArray fta;
+            fta.header.stamp = detected.header.stamp;
+            fta.header.frame_id = frameId;
+            fta.image_seq = detected.header.seq;
 
-        if (!haveCamInfo) {
-            if (frameNum > 5) {
-                ROS_ERROR("No camera intrinsics");
+            if (!haveCamInfo) {
+                if (frameNum > 5) {
+                    ROS_ERROR("No camera intrinsics");
+                }
+                return;
+            }   
+
+            aruco::estimatePoseSingleMarkers(detected.corners, fiducial_len, K, dist, rvecs, tvecs);
+            if(detected.ids.size() > 0) {
+                aruco::drawDetectedMarkers(detected.cv_ptr->image, detected.corners, detected.ids);
             }
-            return;
+
+            for (int i=0; i<detected.ids.size(); i++) {
+                aruco::drawAxis(detected.cv_ptr->image, K, dist, rvecs[i], tvecs[i], fiducial_len);
+
+                ROS_INFO("Detected id %d T %.2f %.2f %.2f R %.2f %.2f %.2f", detected.ids[i],
+                         tvecs[i][0], tvecs[i][1], tvecs[i][2],
+                         rvecs[i][0], rvecs[i][1], rvecs[i][2]);
+
+                double angle = norm(rvecs[i]);
+                Vec3d axis = rvecs[i] / angle;
+                ROS_INFO("angle %f axis %f %f %f", angle, axis[0], axis[1], axis[2]);
+
+                fiducial_pose::FiducialTransform ft;
+                ft.fiducial_id = detected.ids[i];
+
+                ft.transform.translation.x = tvecs[i][0];
+                ft.transform.translation.y = tvecs[i][1];
+                ft.transform.translation.z = tvecs[i][2];
+                
+                tf2::Quaternion q;
+                q.setRotation(tf2::Vector3(axis[0], axis[1], axis[2]), angle);
+
+                ft.transform.rotation.w = q.w();
+                ft.transform.rotation.x = q.x();
+                ft.transform.rotation.y = q.y();
+                ft.transform.rotation.z = q.z();
+
+                fta.transforms.push_back(ft);
+
+            }
+
+            image_pub.publish(detected.cv_ptr->toImageMsg());
+
+            pose_pub.publish(fta);
         }
-
-        aruco::estimatePoseSingleMarkers(detected.corners, fiducial_len, K, dist, rvecs, tvecs);
-        if(detected.ids.size() > 0) {
-            aruco::drawDetectedMarkers(detected.cv_ptr->image, detected.corners, detected.ids);
+         catch(cv_bridge::Exception & e) {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
         }
-
-        for (int i=0; i<detected.ids.size(); i++) {
-            aruco::drawAxis(detected.cv_ptr->image, K, dist, rvecs[i], tvecs[i], fiducial_len);
-
-            ROS_INFO("Detected id %d T %.2f %.2f %.2f R %.2f %.2f %.2f", detected.ids[i],
-                     tvecs[i][0], tvecs[i][1], tvecs[i][2],
-                     rvecs[i][0], rvecs[i][1], rvecs[i][2]);
-
-            double angle = norm(rvecs[i]);
-            Vec3d axis = rvecs[i] / angle;
-            ROS_INFO("angle %f axis %f %f %f", angle, axis[0], axis[1], axis[2]);
-
-            fiducial_pose::FiducialTransform ft;
-            ft.fiducial_id = detected.ids[i];
-
-            ft.transform.translation.x = tvecs[i][0];
-            ft.transform.translation.y = tvecs[i][1];
-            ft.transform.translation.z = tvecs[i][2];
-            
-            tf2::Quaternion q;
-            q.setRotation(tf2::Vector3(axis[0], axis[1], axis[2]), angle);
-
-            ft.transform.rotation.w = q.w();
-            ft.transform.rotation.x = q.x();
-            ft.transform.rotation.y = q.y();
-            ft.transform.rotation.z = q.z();
-
-            fta.transforms.push_back(ft);
-
+         catch(cv::Exception & e) {
+            ROS_ERROR("cv exception: %s", e.what());
         }
-
-        image_pub.publish(detected.cv_ptr->toImageMsg());
-
-        pose_pub.publish(fta);
-    }
-     catch(cv_bridge::Exception & e) {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-    }
-     catch(cv::Exception & e) {
-        ROS_ERROR("cv exception: %s", e.what());
     }
 }
 
 void FiducialsNode::run() {
     while (ros::ok()) {
         processImage(input_images.wait_and_front_pop());
-        processDetected(input_detected.wait_and_front_pop());
+        boost::thread thread(&FiducialsNode::processDetected, this);
     }
 }
 

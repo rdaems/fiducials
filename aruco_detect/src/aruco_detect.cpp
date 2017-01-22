@@ -61,8 +61,8 @@ using namespace cv;
 
 class FiducialsNode {
   private:
-    ros::Publisher * vertices_pub;
-    ros::Publisher * pose_pub;
+    ros::Publisher vertices_pub;
+    ros::Publisher pose_pub;
 
     ros::Subscriber caminfo_sub;
     image_transport::ImageTransport it;
@@ -150,7 +150,7 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
             fid.x3 = corners[i][3].x;
             fid.y3 = corners[i][3].y;
 
-            vertices_pub->publish(fid);
+            vertices_pub.publish(fid);
         }
 
         if (!haveCamInfo) {
@@ -199,7 +199,7 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
         ////cv::waitKey(2);
 	image_pub.publish(cv_ptr->toImageMsg());
 
-        pose_pub->publish(fta);
+        pose_pub.publish(fta);
     }
      catch(cv_bridge::Exception & e) {
         ROS_ERROR("cv_bridge exception: %s", e.what());
@@ -229,9 +229,9 @@ FiducialsNode::FiducialsNode(ros::NodeHandle & nh) : it(nh)
 
     image_pub = it.advertise("/fiducial_images", 1);
 
-    vertices_pub = new ros::Publisher(nh.advertise<fiducial_pose::Fiducial>("/fiducial_vertices", 1));
+    vertices_pub = ros::Publisher(nh.advertise<fiducial_pose::Fiducial>("/fiducial_vertices", 1));
 
-    pose_pub = new ros::Publisher(nh.advertise<fiducial_pose::FiducialTransformArray>("/fiducial_transforms", 1)); 
+    pose_pub = ros::Publisher(nh.advertise<fiducial_pose::FiducialTransformArray>("/fiducial_transforms", 1)); 
     
     dictionary = aruco::getPredefinedDictionary(dicno);
 
@@ -251,7 +251,7 @@ int main(int argc, char ** argv) {
     ros::init(argc, argv, "aruco_detect");
     ros::NodeHandle nh("~");
 
-    FiducialsNode * node = new FiducialsNode(nh);
+    FiducialsNode node(nh);
 
     ros::spin();
 

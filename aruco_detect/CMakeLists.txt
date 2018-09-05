@@ -33,19 +33,21 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_executable(aruco_detect src/aruco_detect.cpp)
 add_executable(create_marker src/create_marker.cpp)
+add_executable(create_diamond_marker src/create_diamond_marker.cpp)
 
 add_dependencies(aruco_detect ${${PROJECT_NAME}_EXPORTED_TARGETS}
                  ${catkin_EXPORTED_TARGETS})
 
 target_link_libraries(aruco_detect ${catkin_LIBRARIES} ${OpenCV_LIBS})
 target_link_libraries(create_marker ${OpenCV_LIBS})
+target_link_libraries(create_diamond_marker ${OpenCV_LIBS})
 
 #############
 ## Install ##
 #############
 
 ## Mark executables and/or libraries for installation
-install(TARGETS aruco_detect create_marker
+install(TARGETS aruco_detect create_marker create_diamond_marker
    ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
    LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
    RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}

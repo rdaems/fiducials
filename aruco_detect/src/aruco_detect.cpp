@@ -54,6 +54,7 @@
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/aruco.hpp>
+#include <opencv2/aruco/charuco.hpp>
 #include <opencv2/calib3d.hpp>
 
 #include <list>
@@ -75,6 +76,7 @@ class FiducialsNode {
     bool publish_images;
 
     double fiducial_len;
+    double diamond_square_len;
 
     bool doPoseEstimation;
     bool haveCamInfo;
@@ -292,7 +294,6 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
 
         vector <int>  ids;
         vector <vector <Point2f> > corners, rejected;
-        vector <Vec3d>  rvecs, tvecs;
 
         aruco::detectMarkers(cv_ptr->image, dictionary, corners, ids, detectorParams);
         ROS_INFO("Detected %d markers", (int)ids.size());
@@ -315,66 +316,71 @@ void FiducialsNode::imageCallback(const sensor_msgs::ImageConstPtr & msg) {
         vertices_pub->publish(fva);
 
         if(ids.size() > 0) {
-            aruco::drawDetectedMarkers(cv_ptr->image, corners, ids);
-        }
-
-        if (doPoseEstimation) {
-            if (!haveCamInfo) {
-                if (frameNum > 5) {
-                    ROS_ERROR("No camera intrinsics");
+            // aruco::drawDetectedMarkers(cv_ptr->image, corners, ids);
+        
+            if (doPoseEstimation) {
+                if (!haveCamInfo) {
+                    if (frameNum > 5) {
+                        ROS_ERROR("No camera intrinsics");
+                    }
+                    return;
                 }
-                return;
+
+                vector <double>reprojectionError;                
+                std::vector< cv::Vec4i > diamondIds;
+                std::vector< std::vector< cv::Point2f > > diamondCorners;
+                cv::aruco::detectCharucoDiamond(cv_ptr->image, corners, ids, diamond_square_len / fiducial_len, diamondCorners, diamondIds);
+
+                if (diamondCorners.size() > 0)  // todo: this is not necessary
+                {
+                    std::vector<cv::Vec3d> rvecs, tvecs;
+                    vector<Point3f> markerObjPoints;
+                    cv::aruco::drawDetectedDiamonds(cv_ptr->image, diamondCorners, diamondIds);
+                    cv::aruco::estimatePoseSingleMarkers(diamondCorners, diamond_square_len, cameraMatrix, distortionCoeffs, rvecs, tvecs, markerObjPoints);
+
+                    for (int i=0; i<rvecs.size(); i++)
+                    {
+                        cv::aruco::drawAxis(cv_ptr->image, cameraMatrix, distortionCoeffs, rvecs[i], tvecs[i], diamond_square_len);
+
+                        ROS_INFO("Detected id [%d, %d, %d, %d] T %.2f %.2f %.2f R %.2f %.2f %.2f", diamondIds[i][0], diamondIds[i][1], diamondIds[i][2], diamondIds[i][3],
+                            tvecs[i][0], tvecs[i][1], tvecs[i][2],
+                            rvecs[i][0], rvecs[i][1], rvecs[i][2]);
+                        
+                        double angle = norm(rvecs[i]);
+                        Vec3d axis = rvecs[i] / angle;
+                        ROS_INFO("angle %f axis %f %f %f",
+                                angle, axis[0], axis[1], axis[2]);
+
+                        fiducial_msgs::FiducialTransform ft;
+                        ft.fiducial_id = 1000000 * diamondIds[i][0] + 10000 * diamondIds[i][1] + 100 * diamondIds[i][2] + diamondIds[i][3];
+
+                        ft.transform.translation.x = tvecs[i][0];
+                        ft.transform.translation.y = tvecs[i][1];
+                        ft.transform.translation.z = tvecs[i][2];
+
+                        tf2::Quaternion q;
+                        q.setRotation(tf2::Vector3(axis[0], axis[1], axis[2]), angle);
+
+                        ft.transform.rotation.w = q.w();
+                        ft.transform.rotation.x = q.x();
+                        ft.transform.rotation.y = q.y();
+                        ft.transform.rotation.z = q.z();
+
+                        ft.fiducial_area = calcFiducialArea(diamondCorners[i]);
+                        ft.image_error = 0;
+
+                        // Convert image_error (in pixels) to object_error (in meters)
+                        ft.object_error = 0;
+
+                        fta.transforms.push_back(ft);
+                    }
+                    pose_pub->publish(fta);
+                }
             }
-
-            vector <double>reprojectionError;
-            estimatePoseSingleMarkers(corners, fiducial_len,
-                                      cameraMatrix, distortionCoeffs,
-                                      rvecs, tvecs,
-                                      reprojectionError);
-
-            for (int i=0; i<ids.size(); i++) {
-                aruco::drawAxis(cv_ptr->image, cameraMatrix, distortionCoeffs,
-                                rvecs[i], tvecs[i], fiducial_len);
-
-                ROS_INFO("Detected id %d T %.2f %.2f %.2f R %.2f %.2f %.2f", ids[i],
-                         tvecs[i][0], tvecs[i][1], tvecs[i][2],
-                         rvecs[i][0], rvecs[i][1], rvecs[i][2]);
-
-                double angle = norm(rvecs[i]);
-                Vec3d axis = rvecs[i] / angle;
-                ROS_INFO("angle %f axis %f %f %f",
-                         angle, axis[0], axis[1], axis[2]);
-
-                fiducial_msgs::FiducialTransform ft;
-                ft.fiducial_id = ids[i];
-
-                ft.transform.translation.x = tvecs[i][0];
-                ft.transform.translation.y = tvecs[i][1];
-                ft.transform.translation.z = tvecs[i][2];
-
-                tf2::Quaternion q;
-                q.setRotation(tf2::Vector3(axis[0], axis[1], axis[2]), angle);
-
-                ft.transform.rotation.w = q.w();
-                ft.transform.rotation.x = q.x();
-                ft.transform.rotation.y = q.y();
-                ft.transform.rotation.z = q.z();
-
-                ft.fiducial_area = calcFiducialArea(corners[i]);
-                ft.image_error = reprojectionError[i];
-
-                // Convert image_error (in pixels) to object_error (in meters)
-                ft.object_error =
-                    (reprojectionError[i] / dist(corners[i][0], corners[i][2])) *
-                    (norm(tvecs[i]) / fiducial_len);
-
-                fta.transforms.push_back(ft);
-            }
-            pose_pub->publish(fta);
         }
 
         if (publish_images) {
-	    image_pub.publish(cv_ptr->toImageMsg());
+	        image_pub.publish(cv_ptr->toImageMsg());
         }
     }
     catch(cv_bridge::Exception & e) {
@@ -402,7 +408,8 @@ FiducialsNode::FiducialsNode(ros::NodeHandle & nh) : it(nh)
     detectorParams = new aruco::DetectorParameters();
 
     nh.param<bool>("publish_images", publish_images, false);
-    nh.param<double>("fiducial_len", fiducial_len, 0.14);
+    nh.param<double>("fiducial_len", fiducial_len, 0.025);
+    nh.param<double>("diamond_square_len", diamond_square_len, 0.040);
     nh.param<int>("dictionary", dicno, 7);
     nh.param<bool>("do_pose_estimation", doPoseEstimation, true);
     image_pub = it.advertise("/fiducial_images", 1);

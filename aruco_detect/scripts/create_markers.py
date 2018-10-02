@@ -66,7 +66,7 @@ if __name__ == "__main__":
         print " Marker %d\r" % i,
         sys.stdout.flush()
         os.system("rosrun aruco_detect create_marker --id=%d --ms=2000 --d=%d marker%d.png" % (i, dicno, i))
-        genSvg("marker%d.svg" % i, i, 7)
+        genSvg("marker%d.svg" % i, i, dicno)
         os.system("inkscape --without-gui --export-pdf=marker%d.pdf marker%d.svg" % (i, i))
         os.remove("marker%d.svg" % i)
         os.remove("marker%d.png" % i)

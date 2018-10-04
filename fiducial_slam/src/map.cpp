@@ -466,7 +466,7 @@ int Map::updatePose(vector<Observation>& obs, const ros::Time &time,
     if (!odomFrame.empty()) {
          outFrame=odomFrame;
          tf2::Transform odomTransform;
-         if (lookupTransform(odomFrame, baseFrame, outPose.stamp_, odomTransform)) {
+         if (lookupTransform(odomFrame, baseFrame, ros::Time(0), odomTransform)) {
 
              outPose.setData(basePose * odomTransform.inverse());
              outFrame = odomFrame;
